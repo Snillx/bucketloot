@@ -39,6 +39,13 @@ BucketLoot is a **lightweight**, **parallelized** Python tool for **listing** th
    pip install -r requirements.txt
    ```
 
+4. Make the tool globally accessible:
+
+   ```bash
+   sudo cp bucketloot /usr/bin/ && sudo chmod +x /usr/bin/bucketloot
+   ```
+
+
 > **Requirements:** Python 3.7+, `requests`
 
 ---
