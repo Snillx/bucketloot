@@ -52,7 +52,7 @@ python bucketloot.py -u <BUCKET_URL> [options]
 You can also
 
 #### Command-Line Arguments
-
+---
 | Flag              | Description                                                                 |
 | ----------------- | --------------------------------------------------------------------------- |
 | `-u`, `--url`     | **(Required)** Base bucket URL (e.g., `https://mybucket.s3.amazonaws.com`). |
@@ -61,25 +61,25 @@ You can also
 | `-v`, `--verbose` | Enable verbose (DEBUG) logging.                                             |
 | `--put <file>`    | Upload a local `<file>` to the bucket via HTTP PUT.                         |
 | `--credits`       | Display author credits and contact info, then exit.                         |
-
+---
 #### Examples
 
 * List all objects and print URLs:
 
   ```bash
-  python bucketloot.py -u https://mybucket.s3.amazonaws.com
+  python bucketloot -u https://mybucket.s3.amazonaws.com
   ```
 
 * Filter only `.txt` files and save to `list.txt`:
 
   ```bash
-  python bucketloot.py -u https://mybucket.s3.amazonaws.com --dump-type txt -o list.txt
+  python bucketloot -u https://mybucket.s3.amazonaws.com --dump-type txt -o list.txt
   ```
 
 * Upload a file to the bucket:
 
   ```bash
-  python bucketloot.py -u https://mybucket.s3.amazonaws.com --put archive.zip
+  python bucketloot -u https://mybucket.s3.amazonaws.com --put archive.zip
   ```
 
 ---
