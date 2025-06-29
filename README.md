@@ -14,7 +14,6 @@ BucketLoot is a **lightweight**, **parallelized** Python tool for **listing** th
 * **Colored Logging**: Uses ANSI escape codes to colorize INFO, DEBUG, and ERROR messages.
 * **Loading Animation**: Displays a live spinner and rotating messages while listing objects.
 * **Verbose Mode**: Enable detailed debugging output with `-v`.
-* **Credits**: Show tool credits and author contacts with `--credits`.
 
 ---
 
