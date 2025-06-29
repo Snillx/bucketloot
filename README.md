@@ -1,5 +1,4 @@
 ## BucketLoot - S3 BUCKET DUMP
----
 > Enumerate **every** object path in a **public S3 bucket** and print or save full **URLs**.
 
 BucketLoot is a **lightweight**, **parallelized** Python tool for **listing** the contents of **public S3 buckets**, optionally filtering by file extension (`dump-type`), and even uploading files via PUT.
