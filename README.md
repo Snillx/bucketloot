@@ -24,7 +24,7 @@ BucketLoot is a **lightweight**, **parallelized** Python tool for **listing** th
 1. Clone this repository:
 
    ```bash
-   git clone https://github.com/YourUsername/BucketLoot.git
+   git clone https://github.com/Snillx/BucketLoot.git
    cd BucketLoot
    ```
 
