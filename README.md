@@ -53,7 +53,7 @@ BucketLoot is a **lightweight**, **parallelized** Python tool for **listing** th
 ## ⚙️ Usage
 
 ```bash
-python bucketloot.py -u <BUCKET_URL> [options]
+bucketloot -u <BUCKET_URL> [options]
 ```
 
 #### Command-Line Arguments
@@ -72,19 +72,19 @@ python bucketloot.py -u <BUCKET_URL> [options]
 * List all objects and print URLs:
 
   ```bash
-  python bucketloot -u https://mybucket.s3.amazonaws.com
+  bucketloot -u https://mybucket.s3.amazonaws.com
   ```
 
 * Filter only `.txt` files and save to `list.txt`:
 
   ```bash
-  python bucketloot -u https://mybucket.s3.amazonaws.com --dump-type txt -o list.txt
+  bucketloot -u https://mybucket.s3.amazonaws.com --dump-type txt -o list.txt
   ```
 
 * Upload a file to the bucket:
 
   ```bash
-  python bucketloot -u https://mybucket.s3.amazonaws.com --put archive.zip
+  bucketloot -u https://mybucket.s3.amazonaws.com --put archive.zip
   ```
 
 ---
