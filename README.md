@@ -49,8 +49,6 @@ BucketLoot is a **lightweight**, **parallelized** Python tool for **listing** th
 python bucketloot.py -u <BUCKET_URL> [options]
 ```
 
-You can also
-
 #### Command-Line Arguments
 ---
 | Flag              | Description                                                                 |
