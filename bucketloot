@@ -1,0 +1,330 @@
+import argparse
+import requests
+import xml.etree.ElementTree as ET
+import concurrent.futures
+import logging
+import sys
+import time
+import threading
+from urllib.parse import urljoin, urlparse
+import os
+
+
+YELLOW = "\033[1;33m"
+ORANGE = "\033[38;5;208m"
+GREEN = "\033[1;32m"
+RED = "\033[1;31m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+GREY = "\033[1;30m" 
+CLEAR_LINE = "\r\033[K"
+
+stop_loading_event = threading.Event()
+
+class ColoredFormatter(logging.Formatter):
+    def format(self, record):
+        log_message = super().format(record)
+        if record.levelno == logging.CRITICAL or record.levelno == logging.ERROR:
+            return f"{RED}{log_message}{RESET}"
+        elif record.levelno == logging.DEBUG or record.levelno == logging.INFO:
+            return f"{YELLOW}{log_message}{RESET}"
+        return log_message
+
+class BucketLoot:
+    def __init__(self, base_url, dump_type, output_file, verbose):
+        self.base_url = base_url.rstrip('/')
+        self.dump_type = dump_type.lower() if dump_type else None
+        self.output_file = output_file
+        self.verbose = verbose
+        self.session = requests.Session()
+
+        self.logger = logging.getLogger(__name__)
+        if not self.logger.handlers:
+            if self.verbose:
+                self.logger.setLevel(logging.DEBUG)
+            else:
+                self.logger.setLevel(logging.INFO)
+            handler = logging.StreamHandler(sys.stderr)
+            formatter = ColoredFormatter('%(levelname)s: %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.propagate = False 
+
+        parsed_url = urlparse(self.base_url)
+        if not parsed_url.scheme or not parsed_url.netloc:  # Da uma validada no formato do url, pq eu meio que quebrei a tool sem querer enquanto testava
+            raise ValueError(f"Invalid base URL: {self.base_url}. Must be a valid HTTP/HTTPS URL.")
+
+    def _fetch_and_parse_page(self, continuation_token=None):
+        params = {'list-type': '2'} 
+        if continuation_token:
+            params['continuation-token'] = continuation_token
+
+        try:
+            self.logger.debug(f"Fetching page with token: {continuation_token if continuation_token else 'initial'}")
+            response = self.session.get(self.base_url, params=params, timeout=10)
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+            namespace = '{http://s3.amazonaws.com/doc/2006-03-01/}'
+
+            keys = []
+            next_token_element = root.find(f'{namespace}NextContinuationToken')
+            next_continuation_token = next_token_element.text if next_token_element is not None else None
+
+            for contents in root.findall(f'{namespace}Contents'):
+                key_element = contents.find(f'{namespace}Key')
+                if key_element is not None:
+                    keys.append(key_element.text)
+
+            is_truncated_element = root.find(f'{namespace}IsTruncated')
+            is_truncated = is_truncated_element is not None and is_truncated_element.text.lower() == 'true'
+            if not is_truncated:
+                next_continuation_token = None 
+            self.logger.debug(f"Fetched {len(keys)} keys. Next token: {next_continuation_token}")
+            return keys, next_continuation_token
+
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Network error fetching {self.base_url} with token {continuation_token}: {e}")
+            raise 
+        except ET.ParseError as e:
+            self.logger.error(f"XML parse error for {self.base_url} with token {continuation_token}: {e}")
+            raise 
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred: {e}", exc_info=self.verbose)
+            raise 
+
+    def run(self):
+        start_time = time.monotonic()
+        all_found_urls = set()
+        pending_tokens = {'None'} 
+        fetched_tokens = set()
+        futures = set()
+        max_workers = 20 # Limit of threads (you can change this, but it's the ideal for S3 BUCKETS alright?)
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                while pending_tokens or futures:
+                    while pending_tokens and len(futures) < max_workers:
+                        token_str = pending_tokens.pop()
+                        token = None if token_str == 'None' else token_str
+                        if token_str in fetched_tokens:
+                            continue
+                        fetched_tokens.add(token_str)
+                        self.logger.debug(f"Submitting task for token: {token_str if token_str != 'None' else 'initial'}")
+                        future = executor.submit(self._fetch_and_parse_page, token)
+                        futures.add(future)
+
+                    if not futures and not pending_tokens:
+                        break
+                    done, _ = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
+
+                    for future in done:
+                        futures.remove(future)
+                        try:
+                            keys, next_continuation_token = future.result()
+                            for key in keys:
+                                if self.dump_type is None or key.lower().endswith(f".{self.dump_type}"):
+                                    full_url = urljoin(self.base_url + '/', key)
+                                    all_found_urls.add(full_url)
+
+                            if next_continuation_token:
+                                next_token_str = str(next_continuation_token)
+                                if next_token_str not in fetched_tokens:
+                                    pending_tokens.add(next_token_str)
+                                    self.logger.debug(f"Discovered new token: {next_token_str}")
+                            else:
+                                self.logger.debug("No next continuation token found or IsTruncated is false.")
+
+                        except Exception as e:
+                            self.logger.error(f"Failed to process a page: {e}", exc_info=self.verbose)
+
+            sys.stdout.write(CLEAR_LINE)
+            sys.stdout.flush()
+
+            sorted_urls = sorted(list(all_found_urls))
+
+            if self.output_file:
+                with open(self.output_file, 'w') as f:
+                    for url in sorted_urls:
+                        f.write(url + '\n')
+                self.logger.info(f"Results written to {self.output_file}")
+            else:
+                for url in sorted_urls:
+                    print(f"{GREY}{url}{RESET}")
+
+            elapsed_time = time.monotonic() - start_time
+            print(f"{GREEN} \nFound {len(sorted_urls)} files in {elapsed_time:.2f} seconds.{RESET}")
+
+        except Exception as e:
+            sys.stdout.write(CLEAR_LINE) 
+            sys.stdout.flush()
+            self.logger.critical(f"An unrecoverable error occurred during execution: {e}", exc_info=self.verbose)
+            sys.exit(1)
+
+def loading_animation():
+    messages = [
+        "Gathering files...",
+        "Mixing things up...",
+        "Almost there...",
+        "Te acalma ai man..."
+    ]
+    idx = 0
+    while not stop_loading_event.is_set():
+        message = messages[idx % len(messages)]
+        sys.stdout.write(f"{CLEAR_LINE}{YELLOW}{message}{RESET}")
+        sys.stdout.flush()
+        time.sleep(0.5)
+        idx += 1
+    sys.stdout.write(CLEAR_LINE)
+    sys.stdout.flush()
+
+
+def main(): # Aqui é onde tudo rola
+    banner = f"""{YELLOW}
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                │
+│   ███████████                      █████                █████         █████                          █████     │
+│  ░░███░░░░░███                    ░░███                ░░███         ░░███                          ░░███      │
+│   ░███    ░███ █████ ████  ██████  ░███ █████  ██████  ███████        ░███         ██████   ██████  ███████    │
+│   ░██████████ ░░███ ░███  ███░░███ ░███░░███  ███░░███░░░███░         ░███        ███░░███ ███░░███░░░███░     │
+│   ░███░░░░░███ ░███ ░███ ░███ ░░░  ░██████░  ░███████   ░███          ░███       ░███ ░███░███ ░███  ░███      │
+│   ░███    ░███ ░███ ░███ ░███  ███ ░███░░███ ░███░░░    ░███ ███      ░███      █░███ ░███░███ ░███  ░███ ███  │
+│   ███████████  ░░████████░░██████  ████ █████░░██████   ░░█████       ███████████░░██████ ░░██████   ░░█████   │
+│  ░░░░░░░░░░░    ░░░░░░░░  ░░░░░░  ░░░░ ░░░░░  ░░░░░░     ░░░░░       ░░░░░░░░░░░  ░░░░░░   ░░░░░░     ░░░░░    │
+│                                                                                                                │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+{RESET}"""
+
+    print(banner)
+
+    parser = argparse.ArgumentParser(
+        description=f"{GREY}Enumerate every object path in a public S3 bucket and prints or saves full URLs. {RESET}",
+    )
+
+    parser.add_argument(
+        "-u", "--url",
+        help=f"{ORANGE}Base bucket URL (e.g., https://mybucket.s3-sa-east-1.amazonaws.com){RESET}"
+    )
+
+    parser.add_argument(
+        "--dump-type",
+        help=f"{ORANGE}Only include keys ending with this extension (e.g., pdf, txt); optional {RESET}"
+    )
+    parser.add_argument(
+        "-o", "--output",
+        dest="output_file",
+        help=f"{ORANGE}Write results to FILE; optional {RESET}"
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help=f"{ORANGE}Enable verbose logging; optional {RESET}"
+    )
+    parser.add_argument(
+        "--put",
+        dest="put_file",
+        help=f"{ORANGE}Upload a file to the bucket via PUT; usage: --put filename {RESET}"
+    )
+    parser.add_argument(
+        "--credits",
+        action="store_true",
+        help=f"{ORANGE}Show tool credits and exit {RESET}"
+    )
+
+    args = parser.parse_args(sys.argv[1:])
+
+    if args.credits:
+        print(f"\n{GREEN}{BOLD}Tool made by {GREY}@Snillx\n{RESET}")
+        print(f"{YELLOW}Youtube: https://www.youtube.com/@SnillxSec{RESET}")
+        print(f"{YELLOW}Medium: https://medium.com/@snillx{RESET}")
+        print(f"{YELLOW}GitHub: https://github.com/Snillx/{RESET}")
+        print(f"{YELLOW}Discord: https://discord.com/invite/websec\n{RESET}")
+        print(f"{GREEN}Feel free to reach out! 🇧🇷 {RESET}\n")
+        sys.exit(0)
+
+    if not args.url:
+        print(f"\n{ORANGE}{BOLD}Missing required argument: -u / --url \n{RESET}", file=sys.stderr)
+        print(f"{YELLOW}Usage: python3 {sys.argv[0]} -u <bucket_url> [options] \n{RESET}", file=sys.stderr)
+        parser.print_help(file=sys.stderr)
+        sys.exit(1)
+
+    loading_thread = None
+    if not args.put_file:
+        loading_thread = threading.Thread(target=loading_animation)
+        loading_thread.daemon = True 
+        loading_thread.start()
+
+    try:
+        bucket_loot = BucketLoot(args.url, args.dump_type, args.output_file, args.verbose)
+        if not args.put_file:
+            bucket_loot.run()
+        if args.put_file:
+            stop_loading_event.set()
+            if loading_thread and loading_thread.is_alive():
+                loading_thread.join(timeout=0.1)
+
+            print(f"\n{YELLOW}{BOLD}Attempting to upload file: {args.put_file}\n{RESET}")
+            
+            if not os.path.exists(args.put_file):
+                print(f"{RED}Error: Local file '{args.put_file}' not found.{RESET}")
+                sys.exit(1)
+
+            file_to_upload_name = os.path.basename(args.put_file)
+            put_url = urljoin(args.url.rstrip('/') + '/', file_to_upload_name)
+
+            try:
+                with open(args.put_file, 'rb') as f:
+                    file_content = f.read()
+
+                print(f"{YELLOW}Sending PUT request to: {put_url}\n{RESET}")
+                response = requests.put(put_url, data=file_content, timeout=30)
+                
+                if response.status_code >= 200 and response.status_code < 300:
+                    print(f"{GREEN}File '{args.put_file}' uploaded successfully to '{put_url}' (Status: {response.status_code}){RESET}")
+                else:
+                    error_message = f"File upload failed (HTTP Status: {response.status_code})."
+                    try:
+                        root = ET.fromstring(response.text)
+                        code_element = root.find('.//Code')
+                        message_element = root.find('.//Message')
+                        
+                        s3_error_code = code_element.text if code_element is not None else 'UnknownS3Error'
+                        s3_error_msg = message_element.text if message_element is not None else 'No specific message provided by S3.'
+                        
+                        error_message += f"\n{RED}S3 Error Code: {s3_error_code}{RESET}"
+                        error_message += f"\n{RED}S3 Error Message: {s3_error_msg}{RESET}"
+                        if args.verbose:
+                            error_message += f"\n{YELLOW}Full S3 Response:\n{response.text.strip()}{RESET}"
+                            
+                    except ET.ParseError:
+                        error_message += f"\n{RED}Server Response (non-XML): {response.text.strip()}{RESET}"
+                    except Exception as parse_e:
+                        error_message += f"\n{RED}Error parsing S3 response: {parse_e}{RESET}"
+                        if args.verbose:
+                             error_message += f"\n{YELLOW}Full S3 Response (raw):\n{response.text.strip()}{RESET}"
+
+                    print(f"{RED}{error_message}{RESET}")
+
+            except requests.exceptions.RequestException as e:
+                print(f"{RED}Network or request error during upload: {e}{RESET}")
+            except Exception as e:
+                print(f"{RED}An unexpected error occurred during file upload: {e}{RESET}")
+
+    except ValueError as e:
+        sys.stdout.flush()
+        print(f"{RED}{BOLD}Error: {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        sys.stdout.write(CLEAR_LINE) 
+        sys.stdout.flush()
+        print(f"{RED}{BOLD}An unexpected error occurred: {e}{RESET}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        stop_loading_event.set()
+        time.sleep(0.1) 
+        if loading_thread and loading_thread.is_alive():
+            loading_thread.join(timeout=1)
+
+if __name__ == "__main__":
+    main()
+
+# Trabalheira da peste numa tool que 3 pessoas vão usar, mas vale a pena
